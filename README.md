@@ -1,264 +1,401 @@
-# Marketplace — учебный проект для семинаров по КПО
+# Marketplace + Delivery
 
-Маркетплейс по продаже автомобилей от разных продавцов: дилеров, частников и аукционов.
-
----
-
-## Зачем это нужно
-
-**Проблема, которую решает проект.** В лекциях 1 и 2 мы разбирали DIP, DI и Composition Root. В лекции 3 — как писать полезные тесты. В лекции 4 — как применять паттерны GoF. Каждая тема по отдельности понятна, но у студентов часто нет **одного сквозного примера**, где всё это работает вместе.
-
-**Решение.** Один проект — маркетплейс автомобилей — где:
-
-- есть **интерфейсы и DI** (`ports/`, `cmd/api/main.go`),
-- есть **unit-тесты** с разными видами двойников (`*_test.go`),
-- есть **все четыре порождающих паттерна** (`listing/`),
-- есть **реальный REST API и Postgres**, чтобы студенты видели production-подобную картину.
-
-**Цель.** Студент после семинаров должен уметь:
-
-- отличать unit-тест от интеграционного,
-- писать тест по правилу Arrange-Act-Assert,
-- выбирать подходящий тестовый двойник (fake, stub, spy, dummy),
-- узнавать паттерн по проблеме, а не по названию,
-- применять Factory Method, Builder, Prototype, Abstract Factory,
-- видеть, где живут паттерны в реальном приложении.
+Монорепозиторий учебного проекта для курса КПО. Два независимых сервиса,
+которые общаются по HTTP и вместе демонстрируют материал лекций 1–6.
 
 ---
 
-## Что умеет
+## 📖 Оглавление
 
-### Бизнес-логика
-
-- Создание объявления о продаже автомобиля от **трёх типов продавцов**.
-- Автоматическое формирование заголовка, описания, комиссии и статуса — **по-разному** для дилера, частника и аукциона.
-- **Клонирование** объявления для дилеров, у которых много похожих машин.
-- **Публикация** объявления с валидацией.
-- Поддержка **трёх маркетплейсов**: standard, premium, auction — со своими комиссиями и правилами модерации.
-
-### Инфраструктура
-
-- **REST API** на стандартной библиотеке `net/http` (без фреймворков).
-- **Postgres** через `database/sql` и `github.com/lib/pq`.
-- **In-memory** хранилище для быстрого запуска и тестов.
-- **Docker Compose** — Postgres + API поднимаются одной командой.
-- **Миграции** — SQL-файл монтируется в `docker-entrypoint-initdb.d`.
-- **Makefile** — все команды для сборки, тестов, запуска, Docker, БД.
-- **Тесты** — unit и HTTP-интеграционные, с race detector.
+- [Что это](#-что-это)
+- [Быстрый старт](#-быстрый-старт)
+- [Архитектура](#-архитектура)
+- [Бизнес-логика маркетплейса](#-бизнес-логика-маркетплейса)
+- [Бизнес-логика доставки](#-бизнес-логика-доставки)
+- [Как сервисы взаимодействуют](#-как-сервисы-взаимодействуют)
+- [Что демонстрирует проект](#-что-демонстрирует-проект)
+- [API](#-api)
+- [Структура проекта](#-структура-проекта)
+- [Команды Makefile](#-команды-makefile)
+- [Переменные окружения](#-переменные-окружения)
+- [Проверка](#-проверка)
+- [Для семинаров](#-для-семинаров)
 
 ---
 
-## Паттерны, которые демонстрирует проект
+## 🎯 Что это
 
-| Паттерн | Файл | Проблема, которую решает |
+**Marketplace** — маркетплейс по продаже автомобилей. Продавцы публикуют объявления,
+покупатели покупают машины, платформа берёт комиссию.
+
+**Delivery** — микросервис доставки. Когда машина продана, marketplace вызывает
+delivery, чтобы запланировать перевозку от продавца к покупателю.
+
+**Зачем два сервиса.** Один сервис не может показать все паттерны из лекций 4–6
+органично. Marketplace — домен машин и объявлений, delivery — домен маршрутов и
+доставки. Вместе они покрывают весь материал курса и дают естественный повод
+для микросервисного взаимодействия.
+
+**Ключевая идея.** Каждый паттерн появляется **там, где была конкретная боль** —
+не «на будущее». Если бы боли не было, паттерн был бы лишним. Это YAGNI.
+
+---
+
+## 🚀 Быстрый старт
+
+### Всё в Docker
+
+```bash
+make up        # поднять postgres + delivery + marketplace
+make smoke     # прогнать сценарий продажи + доставки
+make down      # остановить
+make clean     # остановить + сбросить БД
+```
+
+### Локально (два терминала)
+
+```bash
+# терминал 1 — delivery на :8081
+make delivery
+
+# терминал 2 — marketplace на :8080
+make marketplace
+```
+
+### Каждый сервис отдельно
+
+```bash
+cd marketplace && go run ./cmd/api
+cd delivery    && go run ./cmd/api
+```
+
+Каждый сервис самодостаточен: свой `go.mod`, свой `Dockerfile`.
+
+---
+
+## 🏛 Архитектура
+
+```
+┌─────────────────────────┐         HTTP          ┌─────────────────────────┐
+│      marketplace        │  ──────────────────►  │       delivery          │
+│        :8080            │                       │        :8081            │
+│                         │  ◄──────────────────  │                         │
+│  Domain:                │    delivery_id        │  Domain:                │
+│   - Car                 │                       │   - Delivery            │
+│   - Seller              │                       │   - Route               │
+│   - Listing             │                       │   - Point               │
+│                         │                       │                         │
+│  Patterns:              │                       │  Patterns:              │
+│   - Factory Method      │                       │   - Strategy            │
+│   - Builder             │                       │   - State               │
+│   - Prototype           │                       │   - Template Method     │
+│   - Abstract Factory    │                       │   - Observer            │
+│   - Repository          │                       │   - Command             │
+│   - DIP / DI            │                       │   - Visitor             │
+│                         │                       │   - Adapter             │
+│                         │                       │   - Proxy               │
+│  Storage:               │                       │   - Decorator           │
+│   - in-memory           │                       │   - Flyweight           │
+│   - PostgreSQL          │                       │   - Facade              │
+└─────────────────────────┘                       └─────────────────────────┘
+```
+
+**Направление зависимостей внутри каждого сервиса:**
+
+```
+cmd → httpapi → listing/behavior → ports ← infra
+                     ↓
+                  domain
+```
+
+Бизнес-логика не знает про инфраструктуру. Реализации зависят от интерфейсов.
+Composition Root (`cmd/api/main.go`) — единственное место выбора.
+
+---
+
+## 🚗 Бизнес-логика маркетплейса
+
+### Роли
+
+| Роль | Что делает |
+|---|---|
+| **Дилер** | Публикует машины с гарантией и тест-драйвом |
+| **Частник** | Продаёт личную машину |
+| **Аукцион** | Выставляет лот на торги |
+| **Покупатель** | Покупает машину, получает доставку |
+| **Администратор** | Управляет тарифами |
+
+### Сценарий 1. Создание объявления
+
+1. Продавец выбирает машину: `Tesla Model 3, 2023, 15 000 км, 5 000 000 ₽`.
+2. Указывает тип продавца: `dealer`, `private` или `auction`.
+3. Система автоматически формирует объявление по правилам типа:
+   - **Dealer** → заголовок «от официального дилера», гарантия ✅, тест-драйв ✅, комиссия 3%
+   - **Private** → заголовок с пробегом, гарантии нет, тест-драйв ✅, комиссия 1%
+   - **Auction** → «Аукцион: …», статус `draft`, комиссия 5%
+4. Объявление сохраняется в статусе `pending` (на модерацию).
+
+### Сценарий 2. Публикация
+
+1. Модератор проверяет объявление.
+2. `POST /listings/{id}/publish` → статус `active`.
+3. Покупатели видят объявление в каталоге.
+
+### Сценарий 3. Кастомное объявление (Builder)
+
+Дилер хочет нестандартное оформление:
+
+1. Заполняет заголовок, описание, регион, фото, комиссию.
+2. Флаги `has_warranty`, `has_test_drive`.
+3. `Build()` валидирует обязательные поля.
+4. Готовое объявление получает `pending`.
+
+### Сценарий 4. Клонирование (Prototype)
+
+У дилера 10 одинаковых машин:
+
+1. Создаёт одно объявление.
+2. `POST /listings/{id}/clone` × 9.
+3. Меняет только VIN и цену.
+4. Важно: фото копируются глубоко — изменение клона не влияет на оригинал.
+
+### Сценарий 5. Продажа
+
+1. Покупатель выбрал машину → `POST /listings/{id}/sell`.
+2. Marketplace проверяет, что объявление `active`.
+3. Вызывает delivery → `POST /api/v1/deliveries`.
+4. Получает `delivery_id`.
+5. Меняет статус объявления на `sold`, сохраняет `delivery_id`.
+
+### Правила модерации по тарифам
+
+| Тариф | Комиссия | Модерация |
 |---|---|---|
-| **Factory Method** | `listing/factory.go` | Выбор класса объявления в зависимости от типа продавца без `switch` в бизнес-коде |
-| **Builder** | `listing/builder.go` | Сборка сложного объявления с десятком опциональных полей и валидацией |
-| **Prototype** | `listing/prototype.go` | Клонирование похожих объявлений с глубокой копией фото и вложенных объектов |
-| **Abstract Factory** | `listing/abstract_factory.go` | Создание семейства: объявление + комиссия + модерация — без смешивания |
-| **Repository** (инфраструктурный) | `ports/repository.go`, `infra/*.go` | Отделить бизнес-логику от способа хранения |
-| **Dependency Injection** | `cmd/api/main.go` | Передать зависимости явно, а не создавать их внутри |
-| **Composition Root** | `cmd/api/main.go` | Единственное место, где выбираются конкретные реализации |
+| **Standard** | 3% | автоматическая |
+| **Premium** | 5% | ручная |
+| **Auction** | 7% | ручная |
+
+Тариф определяет семейство правил: комиссию, модерацию, тип объявления.
+Смешивать нельзя — объявление от дилера не может иметь правил аукциона.
 
 ---
 
-## Что освещается на семинаре A (юнит-тестирование)
+## 🚚 Бизнес-логика доставки
 
-### Темы
+### Типы доставки
 
-- Чем unit-тест отличается от интеграционного и e2e.
-- Пирамида тестирования.
-- Правило **Arrange-Act-Assert**.
-- Стили тестов: **output-based**, **state-based**, **interaction-based**.
-- Тестовые двойники: **dummy**, **fake**, **stub**, **spy**, **mock**.
-- Хрупкий тест vs устойчивый к рефакторингу.
-- Четыре критерия хорошего unit-теста.
-- Что мокать, а что проверять настоящим объектом.
-- Humble Object.
-- DI и тестируемость.
+| Тип | Алгоритм | Цена | Пайплайн |
+|---|---|---|---|
+| **Express** | Самый быстрый | 15 000 ₽ | City (SMS) |
+| **Economy** | Самый дешёвый | 8 000 ₽ | City (SMS) |
+| **Eco** | Эко-маршрут | 12 000 ₽ | Intercity (push) |
+| **International** | Международный | 60 000 ₽ | Intl (email) |
 
-### Файлы для разбора
+### Жизненный цикл доставки
 
-| Файл | Что показывает |
+```
+created ──schedule──► scheduled ──start──► in_transit ──complete──► delivered
+   │                       │                    │
+   └───────cancel──────────┴────────────────────┘
+                                                  ✗ нельзя из delivered
+```
+
+Недопустимые переходы возвращают ошибку — например, нельзя начать доставку,
+которая ещё не запланирована.
+
+### Сценарий 1. Создание
+
+`POST /api/v1/deliveries` с телом:
+
+```json
+{
+  "listing_id": "L-D-1-CAR-1",
+  "customer_id": "C-1",
+  "type": "express",
+  "from_city": "Moscow",
+  "to_city": "SPb"
+}
+```
+
+Что происходит внутри:
+
+1. **Facade** координирует сценарий.
+2. **Strategy** выбирает алгоритм по типу доставки.
+3. **Flyweight** достаёт шаблон маршрута `Moscow|SPb` (создаётся один раз).
+4. **Proxy** → **Adapter** обращается к Maps SDK (лениво).
+5. **State** переводит `created → scheduled`.
+6. **Command** оборачивает смену статуса (можно откатить).
+7. **Observer** уведомляет подписчиков: customer, warehouse, analytics, marketplace.
+
+### Сценарий 2. Запуск
+
+`POST /deliveries/{id}/start`:
+
+1. **State**: `scheduled → in_transit`.
+2. **Template Method**: прогон пайплайна `Pickup → Transport → Dropoff → Notify`.
+   Порядок шагов фиксирован, реализация зависит от типа.
+3. **Observer**: уведомления.
+
+### Сценарий 3. Завершение
+
+`POST /deliveries/{id}/complete`:
+
+1. **State**: `in_transit → delivered`.
+2. **Observer**: уведомления.
+
+### Сценарий 4. Undo
+
+`POST /deliveries/{id}/undo`:
+
+**Command** откатывает последнюю смену статуса.
+
+### Сценарий 5. Отчёты
+
+`GET /api/v1/reports`:
+
+**Visitor** обходит все доставки двумя операциями:
+
+- **InsuranceVisitor** — считает страховку (разная для local / long-haul / international).
+- **CostReportVisitor** — собирает строки отчёта.
+
+Ответ:
+
+```json
+{
+  "total_insurance": 2610,
+  "report": [
+    "Local D-1: 1000 RUB",
+    "Long-haul D-2: 5000 RUB",
+    "International D-3: 50000 RUB"
+  ]
+}
+```
+
+---
+
+## 🔗 Как сервисы взаимодействуют
+
+**Marketplace → Delivery:**
+
+```
+POST /listings/{id}/sell
+       │
+       ▼
+marketplace.httpapi.Server.SellListing
+       │
+       ▼
+ports.DeliveryClient.Schedule(listingID, customerID, from, to, type)
+       │
+       ▼
+infra.HTTPDeliveryClient — POST http://delivery:8081/api/v1/deliveries
+       │
+       ▼
+delivery.httpapi.Server.Create
+       │
+       ▼
+structural.ScheduleFacade.Schedule
+       │
+       ▼
+Strategy + Flyweight + Proxy + State + Command + Observer
+```
+
+**Что важно для семинара:**
+
+- Marketplace не знает, как устроена delivery. Он знает только интерфейс
+  `DeliveryClient` — это **DIP**.
+- Конкретная реализация (`HTTPDeliveryClient`) собирается в Composition Root —
+  это **DI**.
+- Если delivery переедет в Kubernetes, поменяется только URL. Код не тронем.
+
+**Ответ delivery в marketplace:**
+
+```json
+{ "id": "DEL-L-D-1-CAR-1", "status": "scheduled" }
+```
+
+`delivery_id` сохраняется в объявлении — можно потом посмотреть статус доставки.
+
+---
+
+## 📚 Что демонстрирует проект
+
+Каждый паттерн появился там, где была конкретная боль. Не «на будущее».
+
+### Лекция 1 — Введение в КПО
+
+**Где:** `marketplace/domain/`, `marketplace/listing/`
+
+| Идея | Где |
 |---|---|
-| `listing/factory_test.go` | Arrange-Act-Assert, table-driven tests, подтесты через `t.Run` |
-| `listing/builder_test.go` | Проверка ошибок через `errors.Is`, сентинел-ошибки |
-| `listing/prototype_test.go` | Глубокая копия как способ изолировать тесты |
-| `httpapi/handlers_test.go` | Интеграционные тесты HTTP без сети через `httptest` |
+| Интерфейсы как контракт | `domain.Engine`, `ports.ListingRepository` |
+| Композиция | `Listing.Car` владеет `*Car` |
+| Агрегация | `Listing.Seller` — внешний объект |
+| SOLID / SRP | Разделение `Car`, `Listing`, `Seller` |
+| SOLID / OCP | `listing.FactoryFor` — новый тип продавца без правки клиента |
+| SOLID / DIP | Бизнес-логика зависит от `ports`, не от `infra` |
 
-### Как запускать
+### Лекция 2 — Внедрение зависимостей
 
-```bash
-make test          # все тесты
-make test-v        # подробный вывод
-make test-race     # с race detector
-make test-cover    # покрытие → coverage.html
-make test-service  # только listing
-make test-http     # только httpapi
-```
+**Где:** `marketplace/cmd/api/main.go`, `delivery/cmd/api/main.go`
 
----
-
-## Что освещается на семинаре B (паттерны GoF)
-
-### Темы
-
-- Паттерн — это имя для повторяющейся проблемы, а не готовый код.
-- Порождающие, структурные, поведенческие паттерны — классификация GoF.
-- **Factory Method** — выбор класса продукта отдельно от клиента.
-- **Abstract Factory** — семейство связанных продуктов, которые нельзя смешивать.
-- **Builder** — пошаговая сборка сложного объекта с валидацией.
-- **Prototype** — клонирование, поверхностное и глубокое копирование.
-- **Singleton** — почему в современной разработке его заменяет DI lifetime.
-- Как выбирать паттерн по проблеме, а не по названию.
-- Частые ошибки: YAGNI, «паттерн на будущее», смешивание ролей.
-
-### Файлы для разбора
-
-| Файл | Паттерн |
+| Идея | Где |
 |---|---|
-| `listing/factory.go` | Factory Method |
-| `listing/builder.go` | Builder |
-| `listing/prototype.go` | Prototype |
-| `listing/abstract_factory.go` | Abstract Factory |
-| `cmd/api/main.go` | DI + Composition Root |
+| DIP | `httpapi.Server` зависит от `ports.ListingRepository` |
+| Constructor injection | `NewServer(repo, delivery)` |
+| Composition Root | `pickRepository()`, `pickDeliveryClient()` |
+| Выбор storage | `STORAGE=memory` vs `STORAGE=postgres` |
+| Выбор delivery URL | `DELIVERY_URL` — runtime |
 
-### Как запускать
+### Лекция 3 — Юнит-тестирование
 
-```bash
-make cli           # CLI-демонстрация всех паттернов
-make run           # REST API с in-memory хранилищем
-make docker-up     # всё в Docker (Postgres + API)
-```
+**Где:** `*_test.go` в обоих сервисах (задел на семинар)
 
----
+- `fakeCarRepo`, `stubPayment`, `spyNotifier` — тестовые двойники.
+- Arrange-Act-Assert.
+- Table-driven tests.
+- Глубокая копия в `Prototype` как способ изоляции тестов.
 
-## Быстрый старт
+### Лекция 4 — Порождающие паттерны GoF
 
-### 1. Клонировать и подтянуть зависимости
+**Где:** `marketplace/listing/`
 
-```bash
-cd marketplace
-make deps
-```
+| Паттерн | Файл | Проблема |
+|---|---|---|
+| **Factory Method** | `factory.go` | Выбор класса объявления по типу продавца |
+| **Builder** | `builder.go` | Сложное объявление с опциональными полями |
+| **Prototype** | `prototype.go` | Клонирование похожих объявлений с глубокой копией |
+| **Abstract Factory** | `abstract_factory.go` | Семейства Standard / Premium / Auction |
 
-Или вручную:
+### Лекция 5 — Поведенческие паттерны GoF
 
-```bash
-go mod tidy
-```
+**Где:** `delivery/behavior/`
 
-### 2. Прогнать тесты
+| Паттерн | Файл | Проблема |
+|---|---|---|
+| **Strategy** | `strategy.go` | Алгоритм расчёта маршрута по типу доставки |
+| **State** | `state.go` | Жизненный цикл доставки `created → delivered` |
+| **Template Method** | `template_method.go` | Каркас пайплайна, разные шаги по типу |
+| **Observer** | `observer.go` | Уведомления подписчиков при смене статуса |
+| **Command** | `command.go` | Смена статуса с undo |
+| **Visitor** | `visitor.go` | Страховка и отчёт над иерархией доставок |
 
-```bash
-make test-v
-```
+### Лекция 6 — Структурные паттерны GoF
 
-### 3. Запустить CLI-демонстрацию паттернов
+**Где:** `delivery/structural/`
 
-```bash
-make cli
-```
-
-Ожидаемый вывод:
-
-```
-=== CLI-демонстрация паттернов ===
-
--- Factory Method --
-[dealer  ] Tesla Model 3 2023, от официального дилера (комиссия 3%)
-[private ] Tesla Model 3 2023, пробег 15000 км (комиссия 1%)
-[auction ] Аукцион: Tesla Model 3 2023 (комиссия 5%)
-
--- Builder --
-Tesla Model 3, идеальное состояние | фото: 2 | регион: СПб
-
--- Prototype --
-original фото: 2
-clone фото:    3
-Оригинал не изменился: true
-
--- Abstract Factory --
-[standard] комиссия 3%, модерация: false
-[premium ] комиссия 5%, модерация: true
-[auction ] комиссия 7%, модерация: true
-
-Сохранено: 2
-```
-
-### 4. Запустить REST API локально
-
-```bash
-make run
-```
-
-Сервер на `localhost:8080`, хранилище — in-memory.
-
-### 5. Запустить всё в Docker (Postgres + API)
-
-```bash
-make docker-up
-```
-
-API на `localhost:8080`, Postgres на `localhost:5432`.
-
-Остановить:
-
-```bash
-make docker-down
-```
-
-### 6. Прогнать smoke-тест
-
-В одном терминале:
-
-```bash
-make run
-```
-
-В другом:
-
-```bash
-make smoke
-```
+| Паттерн | Файл | Проблема |
+|---|---|---|
+| **Adapter** | `adapter.go` | Сторонний Maps SDK → наш `GeoProvider` |
+| **Proxy** | `proxy.go` | Ленивое создание SDK |
+| **Decorator** | `decorator.go` | Логирование + кеш вокруг калькулятора |
+| **Flyweight** | `flyweight.go` | Шаблоны маршрутов — не дублируем |
+| **Facade** | `facade.go` | Один вход в планирование доставки |
 
 ---
 
-## Все команды Makefile
+## 🌐 API
 
-```bash
-make help
-```
-
-Основные:
-
-| Команда | Что делает |
-|---|---|
-| `make deps` | Скачать зависимости |
-| `make build` | Собрать API и CLI в `./bin` |
-| `make test` | Прогнать все тесты |
-| `make test-race` | Тесты с race detector |
-| `make test-cover` | Покрытие → `coverage.html` |
-| `make run` | REST API локально (in-memory) |
-| `make run-postgres` | REST API локально с Postgres |
-| `make cli` | CLI-демонстрация паттернов |
-| `make smoke` | curl-сценарий против `localhost:8080` |
-| `make docker-up` | Всё в Docker в фоне |
-| `make docker-down` | Остановить и удалить контейнеры |
-| `make docker-logs` | Смотреть логи API |
-| `make postgres-up` | Поднять только Postgres |
-| `make postgres-wait` | Дождаться готовности Postgres |
-| `make psql` | Открыть psql внутри контейнера |
-| `make db-listings` | Показать объявления в БД |
-| `make ci` | deps + fmt + vet + test-race |
-
-Полный список — `make help`.
-
----
-
-## REST API
-
-База: `/api/v1`. Формат: JSON.
+### Marketplace (`:8080`)
 
 | Метод | Путь | Что делает | Паттерн |
 |---|---|---|---|
@@ -266,16 +403,172 @@ make help
 | POST | `/api/v1/listings/custom` | Кастомное объявление | Builder |
 | POST | `/api/v1/listings/{id}/clone` | Клонировать | Prototype |
 | POST | `/api/v1/listings/{id}/publish` | Опубликовать | — |
-| GET | `/api/v1/listings` | Список объявлений | — |
-| GET | `/api/v1/listings/{id}` | Одно объявление | — |
-| GET | `/api/v1/marketplaces` | Тарифы маркетплейсов | Abstract Factory |
-| GET | `/healthz` | Health check | — |
+| POST | `/api/v1/listings/{id}/sell` | Продать (вызывает delivery) | DIP + DI |
+| GET | `/api/v1/listings` | Список | — |
+| GET | `/api/v1/listings/{id}` | Одно | — |
+| GET | `/api/v1/marketplaces` | Тарифы | Abstract Factory |
+| GET | `/healthz` | Health | — |
 
-### Примеры запросов
+### Delivery (`:8081`)
 
-**Создать объявление от дилера:**
+| Метод | Путь | Что делает | Паттерн |
+|---|---|---|---|
+| POST | `/api/v1/deliveries` | Создать доставку | Facade + Strategy + Flyweight |
+| POST | `/api/v1/deliveries/{id}/start` | Запустить | State + Template Method |
+| POST | `/api/v1/deliveries/{id}/complete` | Завершить | State |
+| POST | `/api/v1/deliveries/{id}/undo` | Откатить | Command |
+| GET | `/api/v1/deliveries` | Список | — |
+| GET | `/api/v1/deliveries/{id}` | Одна | — |
+| GET | `/api/v1/reports` | Отчёты | Visitor |
+| GET | `/healthz` | Health | — |
+
+---
+
+## 📁 Структура проекта
+
+```
+.
+├── README.md
+├── Makefile
+├── docker-compose.yml
+│
+├── marketplace/                    # :8080
+│   ├── go.mod
+│   ├── Dockerfile
+│   ├── domain/                     # Car, Seller, Listing
+│   │   ├── car.go
+│   │   ├── seller.go
+│   │   └── listing.go
+│   ├── listing/                    # Порождающие паттерны
+│   │   ├── factory.go              # Factory Method
+│   │   ├── builder.go              # Builder
+│   │   ├── prototype.go            # Prototype
+│   │   └── abstract_factory.go     # Abstract Factory
+│   ├── ports/                      # Интерфейсы (DIP)
+│   │   ├── repository.go
+│   │   └── delivery.go
+│   ├── infra/                      # Реализации
+│   │   ├── repo_memory.go
+│   │   ├── repo_postgres.go
+│   │   └── delivery_http.go        # HTTP-клиент к delivery
+│   ├── httpapi/
+│   │   └── handlers.go
+│   ├── migrations/
+│   │   └── 001_init.sql
+│   └── cmd/api/
+│       └── main.go                 # Composition Root
+│
+└── delivery/                       # :8081
+    ├── go.mod
+    ├── Dockerfile
+    ├── domain/
+    │   └── delivery.go             # Delivery, Route, Point
+    ├── behavior/                   # Поведенческие паттерны
+    │   ├── strategy.go             # Strategy
+    │   ├── state.go                # State
+    │   ├── template_method.go      # Template Method
+    │   ├── observer.go             # Observer
+    │   ├── command.go              # Command
+    │   └── visitor.go              # Visitor
+    ├── structural/                 # Структурные паттерны
+    │   ├── adapter.go              # Adapter
+    │   ├── proxy.go                # Proxy
+    │   ├── decorator.go            # Decorator
+    │   ├── flyweight.go            # Flyweight
+    │   └── facade.go               # Facade
+    ├── ports/
+    │   └── repository.go
+    ├── infra/
+    │   └── repo_memory.go
+    ├── httpapi/
+    │   └── handlers.go
+    └── cmd/api/
+        └── main.go                 # Composition Root
+```
+
+---
+
+## 🛠 Команды Makefile
 
 ```bash
+make help          # список всех команд
+```
+
+### Docker
+
+| Команда | Что делает |
+|---|---|
+| `make up` | Поднять всё (postgres + delivery + marketplace) |
+| `make down` | Остановить |
+| `make clean` | Остановить + удалить volume БД |
+| `make logs` | Логи |
+| `make ps` | Контейнеры |
+
+### Локально
+
+| Команда | Что делает |
+|---|---|
+| `make delivery` | Delivery локально (:8081) |
+| `make marketplace` | Marketplace локально, in-memory (:8080) |
+| `make marketplace-postgres` | Marketplace локально + Postgres |
+
+### Разработка
+
+| Команда | Что делает |
+|---|---|
+| `make build` | Собрать оба сервиса |
+| `make test` | Тесты обоих |
+| `make tidy` | go mod tidy |
+| `make fmt` | go fmt |
+
+### Postgres
+
+| Команда | Что делает |
+|---|---|
+| `make postgres-up` | Поднять только Postgres |
+| `make psql` | Открыть psql |
+| `make db-listings` | Показать объявления |
+
+### Smoke
+
+| Команда | Что делает |
+|---|---|
+| `make smoke` | Полный сценарий: создать → опубликовать → продать → доставить |
+
+---
+
+## ⚙️ Переменные окружения
+
+### Marketplace
+
+| Переменная | Значения | По умолчанию |
+|---|---|---|
+| `PORT` | Номер порта | `8080` |
+| `STORAGE` | `memory` \| `postgres` | `memory` |
+| `DATABASE_URL` | Строка подключения | — |
+| `DELIVERY_URL` | URL delivery | `http://localhost:8081` |
+
+### Delivery
+
+| Переменная | Значения | По умолчанию |
+|---|---|---|
+| `PORT` | Номер порта | `8081` |
+
+---
+
+## ✅ Проверка
+
+### Health
+
+```bash
+curl -s localhost:8080/healthz | jq
+curl -s localhost:8081/healthz | jq
+```
+
+### Полный сценарий
+
+```bash
+# 1. Создать объявление от дилера
 curl -s -X POST localhost:8080/api/v1/listings \
   -H "Content-Type: application/json" \
   -d '{
@@ -289,251 +582,42 @@ curl -s -X POST localhost:8080/api/v1/listings \
     "seller_name": "AutoDealer",
     "seller_type": "dealer"
   }' | jq
-```
 
-**Список:**
-
-```bash
-curl -s localhost:8080/api/v1/listings | jq
-```
-
-**Клонировать:**
-
-```bash
-curl -s -X POST localhost:8080/api/v1/listings/L-D-1-CAR-1/clone | jq
-```
-
-**Опубликовать:**
-
-```bash
+# 2. Опубликовать
 curl -s -X POST localhost:8080/api/v1/listings/L-D-1-CAR-1/publish | jq
+
+# 3. Продать — marketplace вызовет delivery
+curl -s -X POST localhost:8080/api/v1/listings/L-D-1-CAR-1/sell | jq
+
+# 4. Проверить, что доставка создана
+curl -s localhost:8081/api/v1/deliveries | jq
+
+# 5. Запустить доставку
+curl -s -X POST localhost:8081/api/v1/deliveries/DEL-L-D-1-CAR-1/start | jq
+
+# 6. Завершить
+curl -s -X POST localhost:8081/api/v1/deliveries/DEL-L-D-1-CAR-1/complete | jq
+
+# 7. Отчёты (Visitor)
+curl -s localhost:8081/api/v1/reports | jq
 ```
 
-**Тарифы:**
+### Или одной командой
 
 ```bash
-curl -s localhost:8080/api/v1/marketplaces | jq
+make smoke
 ```
 
 ---
 
-## Структура проекта
+## 📝 Для семинаров
 
-```
-marketplace/
-├── go.mod
-├── go.sum
-├── Makefile
-├── Dockerfile
-├── docker-compose.yml
-├── .env.example
-├── .dockerignore
-├── README.md
-│
-├── domain/                 # предметная область
-│   ├── car.go              # Car
-│   ├── seller.go           # Seller, SellerType
-│   └── listing.go          # Listing, ListingStatus
-│
-├── ports/                  # интерфейсы (DIP)
-│   └── repository.go       # ListingRepository
-│
-├── listing/                # паттерны + их тесты
-│   ├── factory.go          # Factory Method
-│   ├── factory_test.go
-│   ├── builder.go          # Builder
-│   ├── builder_test.go
-│   ├── prototype.go        # Prototype
-│   ├── prototype_test.go
-│   ├── abstract_factory.go # Abstract Factory
-│   └── abstract_factory_test.go
-│
-├── infra/                  # реализации хранилищ
-│   ├── repo_memory.go      # in-memory
-│   └── repo_postgres.go    # Postgres
-│
-├── httpapi/                # REST-слой
-│   ├── handlers.go
-│   └── handlers_test.go
-│
-├── migrations/             # миграции БД
-│   └── 001_init.sql
-│
-└── cmd/                    # точки входа
-    ├── api/                # REST API
-    │   └── main.go
-    └── marketplace/        # CLI-демонстрация
-        └── main.go
-```
+**Семинар A — юнит-тестирование.** Открывать `*_test.go`, запускать `make test`.
 
-### Слои
+**Семинар B — паттерны GoF.** Открывать `listing/`, `behavior/`, `structural/`.
+Запускать `make marketplace` и `make delivery`.
 
-| Слой | Пакет | Отвечает за |
-|---|---|---|
-| Домен | `domain/` | Чистые типы предметной области |
-| Порты | `ports/` | Интерфейсы, которые описывает потребитель |
-| Приложение | `listing/` | Бизнес-логика и паттерны |
-| Инфраструктура | `infra/` | Реализации хранилищ, адаптеры |
-| Транспорт | `httpapi/` | HTTP-хендлеры, JSON |
-| Точка входа | `cmd/` | Composition Root |
-
-**Направление зависимостей:**
-
-```
-cmd → httpapi → listing → ports ← infra
-                  ↓
-                domain
-```
-
-Бизнес-логика (`listing/`) зависит только от `domain` и `ports`. Инфраструктура (`infra/`) — тоже. `httpapi/` знает про бизнес-логику, но не знает про способ хранения. Выбор реализации — только в `cmd/`.
+**Семинар по микросервисам.** Показать `docker-compose.yml`, `HTTPDeliveryClient`,
+объяснить DIP между сервисами.
 
 ---
-
-## Сценарии на семинаре
-
-### Семинар A — тесты
-
-**Открывать по порядку:**
-
-1. `listing/factory_test.go` — показать Arrange-Act-Assert и table-driven.
-2. `listing/builder_test.go` — показать проверку ошибок через `errors.Is`.
-3. `listing/prototype_test.go` — показать, как глубокая копия изолирует тесты.
-4. `httpapi/handlers_test.go` — показать `httptest`, тесты без сети и БД.
-
-**Запускать:**
-
-```bash
-make test-v
-make test-race
-make test-cover
-```
-
-Открыть `coverage.html` в браузере — показать покрытие по слоям.
-
-### Семинар B — паттерны
-
-**Открывать по порядку:**
-
-1. `listing/factory.go` — Factory Method: почему не `switch` в бизнес-коде.
-2. `listing/builder.go` — Builder: почему не телескопический конструктор.
-3. `listing/prototype.go` — Prototype: почему не ручное копирование.
-4. `listing/abstract_factory.go` — Abstract Factory: почему семейства нельзя смешивать.
-5. `cmd/api/main.go` — DI + Composition Root: где выбирается хранилище.
-
-**Запускать:**
-
-```bash
-make cli                # CLI-демонстрация
-make docker-up          # всё в Docker
-make db-listings        # проверить БД
-make docker-down
-```
-
----
-
-## Технологии
-
-- **Go 1.22** — язык.
-- **`net/http`** — HTTP-сервер из стандартной библиотеки.
-- **`database/sql`** + **`github.com/lib/pq`** — работа с Postgres.
-- **`testing`** + **`net/http/httptest`** — тесты.
-- **Postgres 16** — БД.
-- **Docker + Docker Compose** — инфраструктура.
-- **Make** — управление командами.
-
-**Внешних зависимостей только одна** — драйвер Postgres. Это принципиально: студенты видят, что бизнес-логика, паттерны и тесты не требуют фреймворков.
-
----
-
-## Переменные окружения
-
-| Переменная | Значения | По умолчанию |
-|---|---|---|
-| `STORAGE` | `memory` \| `postgres` | `memory` |
-| `DATABASE_URL` | строка подключения | — |
-| `PORT` | номер порта | `8080` |
-
-Пример:
-
-```bash
-STORAGE=postgres \
-DATABASE_URL='postgres://marketplace:marketplace@localhost:5432/marketplace?sslmode=disable' \
-PORT=9090 \
-make run
-```
-
----
-
-## Как переключиться между хранилищами
-
-**In-memory** — по умолчанию:
-
-```bash
-make run
-```
-
-**Postgres** — через Docker:
-
-```bash
-make postgres-up
-make postgres-wait
-make run-postgres
-```
-
-**Postgres + API целиком в Docker:**
-
-```bash
-make docker-up
-```
-
-Один и тот же код, одно и то же API. Меняется только переменная `STORAGE`. Это иллюстрация DIP в действии: бизнес-логика не знает, куда пишутся данные.
-
----
-
-## Отладка
-
-**API не стартует с Postgres** — дождись готовности БД:
-
-```bash
-make postgres-up
-make postgres-wait
-```
-
-**Миграции не применились** — Postgres выполняет их только при первом старте. Если схема менялась:
-
-```bash
-make docker-clean     # сбросит БД и volume
-make docker-up
-```
-
-**Порт 8080 занят** — переопредели:
-
-```bash
-make run PORT=9090
-make smoke PORT=9090
-```
-
-**Тесты с race detector долгие** — используй только для семинара A:
-
-```bash
-make test          # без -race
-make test-race     # с -race, дольше
-```
-
----
-
-## Что дальше
-
-Проект покрывает лекции 3 (юнит-тестирование) и 4 (паттерны GoF). В следующих лекциях курса появятся:
-
-- **Структурные паттерны** — Adapter, Decorator, Facade, Composite.
-- **Поведенческие паттерны** — Strategy, State, Observer, Template Method.
-- **CI/CD** — тесты как часть pipeline от commit до production.
-
-Проект легко расширяется под эти темы: `listing/` — для поведенческих, `infra/` — для структурных, `httpapi/` — для интеграционных сценариев.
-
----
-
-## Лицензия
-
-Учебный проект. Используется на семинарах курса «Конструирование программного обеспечения».

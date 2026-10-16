@@ -1,0 +1,253 @@
+# ============================================================
+# Marketplace + Delivery — REST Client
+#
+# Требуется расширение VS Code: humao.rest-client
+#
+# Открой этот файл в VS Code → над каждым запросом появится
+# ссылка "Send Request". Клик — запрос выполняется, ответ
+# показывается в отдельной панели.
+#
+# Переменные ниже можно менять. {{marketplace}} и {{delivery}} —
+# это адреса сервисов.
+# ============================================================
+
+@marketplace = http://127.0.0.1:8080
+@delivery = http://127.0.0.1:8081
+
+@listingId = L-D-1-CAR-1
+@deliveryId = DEL-L-D-1-CAR-1
+
+
+# ============================================================
+# MARKETPLACE
+# ============================================================
+
+### Health marketplace
+GET {{marketplace}}/healthz
+
+
+### Создать объявление от дилера (Factory Method)
+POST {{marketplace}}/api/v1/listings
+Content-Type: application/json
+
+{
+  "car_id": "CAR-1",
+  "brand": "Tesla",
+  "model": "Model 3",
+  "year": 2023,
+  "mileage": 15000,
+  "price": 5000000,
+  "seller_id": "D-1",
+  "seller_name": "AutoDealer",
+  "seller_type": "dealer"
+}
+
+
+### Создать объявление от частника (Factory Method)
+POST {{marketplace}}/api/v1/listings
+Content-Type: application/json
+
+{
+  "car_id": "CAR-2",
+  "brand": "Lada",
+  "model": "Vesta",
+  "year": 2020,
+  "mileage": 80000,
+  "price": 800000,
+  "seller_id": "P-1",
+  "seller_name": "Ivan",
+  "seller_type": "private"
+}
+
+
+### Создать объявление от аукциона (Factory Method)
+POST {{marketplace}}/api/v1/listings
+Content-Type: application/json
+
+{
+  "car_id": "CAR-3",
+  "brand": "BMW",
+  "model": "X5",
+  "year": 2021,
+  "mileage": 40000,
+  "price": 4000000,
+  "seller_id": "A-1",
+  "seller_name": "AuctionHouse",
+  "seller_type": "auction"
+}
+
+
+### Кастомное объявление (Builder)
+POST {{marketplace}}/api/v1/listings/custom
+Content-Type: application/json
+
+{
+  "car_id": "CAR-41",
+  "brand": "BMW",
+  "model": "X5",
+  "year": 2022,
+  "mileage": 30000,
+  "price": 7000000,
+  "seller_id": "D-1",
+  "seller_name": "AutoDealer",
+  "seller_type": "dealer",
+  "title": "BMW X5, идеальное состояние",
+  "description": "Один владелец, полный пакет",
+  "region": "СПб",
+  "photos": [
+    "https://example.com/1.jpg",
+    "https://example.com/2.jpg"
+  ],
+  "has_warranty": true,
+  "has_test_drive": true,
+  "commission": 4
+}
+
+
+### Builder: ошибка — нет заголовка
+# Ожидается 400 и {"error": "listing: title is required"}
+POST {{marketplace}}/api/v1/listings/custom
+Content-Type: application/json
+
+{
+  "car_id": "CAR-5",
+  "brand": "Audi",
+  "model": "Q7",
+  "year": 2023,
+  "mileage": 5000,
+  "price": 8000000,
+  "seller_id": "D-1",
+  "seller_name": "AutoDealer",
+  "seller_type": "dealer"
+}
+
+
+### Клонировать объявление (Prototype)
+POST {{marketplace}}/api/v1/listings/{{listingId}}/clone
+
+
+### Опубликовать объявление
+POST {{marketplace}}/api/v1/listings/{{listingId}}/publish
+
+
+### Продать объявление (DIP + DI → вызов delivery)
+POST {{marketplace}}/api/v1/listings/{{listingId}}/sell
+
+
+### Список объявлений
+GET {{marketplace}}/api/v1/listings
+
+
+### Одно объявление
+GET {{marketplace}}/api/v1/listings/{{listingId}}
+
+
+### Тарифы маркетплейсов (Abstract Factory)
+GET {{marketplace}}/api/v1/marketplaces
+
+
+# ============================================================
+# DELIVERY
+# ============================================================
+
+### Health delivery
+GET {{delivery}}/healthz
+
+
+### Создать доставку — economy (Facade + Strategy + Flyweight + Proxy + Adapter + State + Observer)
+POST {{delivery}}/api/v1/deliveries
+Content-Type: application/json
+
+{
+  "listing_id": "L-D-2-CAR-10",
+  "customer_id": "C-2",
+  "type": "economy",
+  "from_city": "Moscow",
+  "to_city": "Kazan"
+}
+
+
+### Создать доставку — express (другая цена через Strategy)
+POST {{delivery}}/api/v1/deliveries
+Content-Type: application/json
+
+{
+  "listing_id": "L-D-2-CAR-11",
+  "customer_id": "C-3",
+  "type": "express",
+  "from_city": "Moscow",
+  "to_city": "Kazan"
+}
+
+
+### Создать доставку — eco
+POST {{delivery}}/api/v1/deliveries
+Content-Type: application/json
+
+{
+  "listing_id": "L-D-2-CAR-12",
+  "customer_id": "C-4",
+  "type": "eco",
+  "from_city": "Moscow",
+  "to_city": "SPb"
+}
+
+
+### Создать доставку — international (Template Method → InternationalPipeline)
+POST {{delivery}}/api/v1/deliveries
+Content-Type: application/json
+
+{
+  "listing_id": "L-D-2-CAR-13",
+  "customer_id": "C-5",
+  "type": "international",
+  "from_city": "Moscow",
+  "to_city": "Berlin"
+}
+
+
+### Список доставок
+GET {{delivery}}/api/v1/deliveries
+
+
+### Одна доставка
+GET {{delivery}}/api/v1/deliveries/{{deliveryId}}
+
+
+### Запустить доставку (State + Template Method + Observer)
+POST {{delivery}}/api/v1/deliveries/{{deliveryId}}/start
+
+
+### Завершить доставку (State)
+POST {{delivery}}/api/v1/deliveries/{{deliveryId}}/complete
+
+
+### Невозможный переход (State — уже доставлено)
+# Ожидается 400 и {"error": "уже доставлено (delivered)"}
+POST {{delivery}}/api/v1/deliveries/{{deliveryId}}/start
+
+
+### Откатить последнюю смену статуса (Command)
+POST {{delivery}}/api/v1/deliveries/{{deliveryId}}/undo
+
+
+### Отчёты (Visitor)
+GET {{delivery}}/api/v1/reports
+
+
+# ============================================================
+# СЦЕНАРИЙ ЦЕЛИКОМ
+#
+# 1. Marketplace → health
+# 2. Marketplace → создать объявление от дилера
+# 3. Marketplace → опубликовать
+# 4. Marketplace → продать (вызовет delivery)
+# 5. Delivery → health
+# 6. Delivery → список доставок
+# 7. Delivery → start доставки
+# 8. Delivery → complete доставки
+# 9. Delivery → reports
+#
+# Между запросами меняй {{listingId}} и {{deliveryId}} в
+# переменных сверху, если ID отличаются.
+# ============================================================

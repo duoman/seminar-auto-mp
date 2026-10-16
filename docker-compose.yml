@@ -10,23 +10,33 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d
+      - ./marketplace/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U marketplace -d marketplace"]
       interval: 3s
       timeout: 3s
       retries: 10
 
-  api:
-    build: .
+  delivery:
+    build: ./delivery
+    container_name: delivery-api
+    ports:
+      - "8081:8081"
+    restart: on-failure
+
+  marketplace:
+    build: ./marketplace
     container_name: marketplace-api
     depends_on:
       postgres:
         condition: service_healthy
+      delivery:
+        condition: service_started
     environment:
       PORT: "8080"
       STORAGE: "postgres"
       DATABASE_URL: "postgres://marketplace:marketplace@postgres:5432/marketplace?sslmode=disable"
+      DELIVERY_URL: "http://delivery:8081"
     ports:
       - "8080:8080"
     restart: on-failure
