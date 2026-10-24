@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -13,191 +12,89 @@ import (
 )
 
 type Server struct {
-	repo    ports.DeliveryRepository
-	facade  *structural.ScheduleFacade
-	pub     *behavior.Publisher
-	history *behavior.History
+	repo   ports.Repository
+	facade *structural.ScheduleFacade
+	pub    *behavior.Publisher
 }
 
-func NewServer(repo ports.DeliveryRepository, facade *structural.ScheduleFacade,
-	pub *behavior.Publisher, history *behavior.History) *Server {
-	return &Server{repo: repo, facade: facade, pub: pub, history: history}
+func NewServer(r ports.Repository, f *structural.ScheduleFacade, p *behavior.Publisher) *Server {
+	return &Server{repo: r, facade: f, pub: p}
 }
 
-type createRequest struct {
-	ListingID  string `json:"listing_id"`
-	CustomerID string `json:"customer_id"`
-	Type       string `json:"type"`
-	FromCity   string `json:"from_city"`
-	ToCity     string `json:"to_city"`
+func writeJSON(w http.ResponseWriter, c int, v any) {
+	w.Header().Set("Content-Type", "application/json"); w.WriteHeader(c); _ = json.NewEncoder(w).Encode(v)
 }
+func writeErr(w http.ResponseWriter, c int, m string) { writeJSON(w, c, map[string]string{"error": m}) }
 
-type deliveryResponse struct {
+type dResp struct {
 	ID         string `json:"id"`
 	ListingID  string `json:"listing_id"`
-	CustomerID string `json:"customer_id"`
-	Type       string `json:"type"`
 	Status     string `json:"status"`
 	Price      int    `json:"price"`
-	FromCity   string `json:"from_city"`
-	ToCity     string `json:"to_city"`
+	Type       string `json:"type"`
+	DistanceKM int    `json:"distance_km"`
 }
 
-func toResponse(d *domain.Delivery) deliveryResponse {
-	return deliveryResponse{
-		ID: d.ID, ListingID: d.ListingID, CustomerID: d.CustomerID,
-		Type: string(d.Type), Status: string(d.Status), Price: d.Price,
-		FromCity: d.From.City, ToCity: d.To.City,
-	}
-}
-
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
-}
-
-func (s *Server) Create(w http.ResponseWriter, r *http.Request) {
-	var req createRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid json")
-		return
-	}
-	id := "DEL-" + req.ListingID
-	from := domain.Point{City: req.FromCity}
-	to := domain.Point{City: req.ToCity}
-	d, err := s.facade.Schedule(id, req.ListingID, req.CustomerID, domain.DeliveryType(req.Type), from, to)
-	if err != nil {
-		writeError(w, 400, err.Error())
-		return
-	}
-	writeJSON(w, 201, toResponse(d))
+func toResp(d *domain.Delivery) dResp {
+	return dResp{d.ID(), d.ListingID(), string(d.Status()), d.Price(), string(d.Type()), d.DistanceKM()}
 }
 
 func (s *Server) Start(w http.ResponseWriter, r *http.Request) {
-	id := extractID(r.URL.Path, "/start")
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/deliveries/"), "/start")
 	d, err := s.repo.FindByID(id)
-	if err != nil {
-		writeError(w, 404, "not found")
-		return
-	}
-	state := behavior.StateFor(d.Status)
-	if state == nil {
-		writeError(w, 400, "unknown state")
-		return
-	}
-	if err := state.Start(d); err != nil {
-		writeError(w, 400, err.Error())
-		return
-	}
+	if err != nil { writeErr(w, 404, "not found"); return }
+	if err := d.Start(); err != nil { writeErr(w, 400, err.Error()); return }
 	_ = s.repo.Save(d)
-	pipeline := behavior.PipelineFor(d.Type)
-	fmt.Printf("[Pipeline] %s type=%s\n", d.ID, d.Type)
-	behavior.RunDelivery(pipeline, d)
-	s.pub.Publish(behavior.DeliveryEvent{DeliveryID: d.ID, Status: string(d.Status)})
-	writeJSON(w, 200, toResponse(d))
+	behavior.RunPipeline(behavior.PipelineFor(d.Type()), d)
+	s.pub.Publish(behavior.Event{DeliveryID: d.ID(), Status: string(d.Status())})
+	writeJSON(w, 200, toResp(d))
 }
 
 func (s *Server) Complete(w http.ResponseWriter, r *http.Request) {
-	id := extractID(r.URL.Path, "/complete")
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/deliveries/"), "/complete")
 	d, err := s.repo.FindByID(id)
-	if err != nil {
-		writeError(w, 404, "not found")
-		return
-	}
-	state := behavior.StateFor(d.Status)
-	if err := state.Complete(d); err != nil {
-		writeError(w, 400, err.Error())
-		return
-	}
+	if err != nil { writeErr(w, 404, "not found"); return }
+	if err := d.Complete(); err != nil { writeErr(w, 400, err.Error()); return }
 	_ = s.repo.Save(d)
-	s.pub.Publish(behavior.DeliveryEvent{DeliveryID: d.ID, Status: string(d.Status)})
-	writeJSON(w, 200, toResponse(d))
-}
-
-func (s *Server) Undo(w http.ResponseWriter, r *http.Request) {
-	id := extractID(r.URL.Path, "/undo")
-	d, err := s.repo.FindByID(id)
-	if err != nil {
-		writeError(w, 404, "not found")
-		return
-	}
-	cmd := s.history.UndoLast()
-	if cmd == nil {
-		writeError(w, 400, "nothing to undo")
-		return
-	}
-	_ = s.repo.Save(d)
-	writeJSON(w, 200, toResponse(d))
+	s.pub.Publish(behavior.Event{DeliveryID: d.ID(), Status: string(d.Status())})
+	writeJSON(w, 200, toResp(d))
 }
 
 func (s *Server) Get(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/deliveries/")
 	d, err := s.repo.FindByID(id)
-	if err != nil {
-		writeError(w, 404, "not found")
-		return
-	}
-	writeJSON(w, 200, toResponse(d))
+	if err != nil { writeErr(w, 404, "not found"); return }
+	writeJSON(w, 200, toResp(d))
 }
 
 func (s *Server) List(w http.ResponseWriter, r *http.Request) {
 	all, _ := s.repo.All()
-	out := make([]deliveryResponse, 0, len(all))
-	for _, d := range all {
-		out = append(out, toResponse(d))
-	}
+	out := make([]dResp, 0, len(all))
+	for _, d := range all { out = append(out, toResp(d)) }
 	writeJSON(w, 200, out)
 }
 
 func (s *Server) Reports(w http.ResponseWriter, r *http.Request) {
 	all, _ := s.repo.All()
-	insurance := &behavior.InsuranceVisitor{}
-	report := &behavior.CostReportVisitor{}
+	ins := &behavior.InsuranceVisitor{}
+	rep := &behavior.ReportVisitor{}
 	for _, d := range all {
-		kind := behavior.ClassifyDelivery(d)
-		kind.Accept(insurance)
-		kind.Accept(report)
+		behavior.Classify(d).Accept(ins)
+		behavior.Classify(d).Accept(rep)
 	}
-	writeJSON(w, 200, map[string]any{
-		"total_insurance": insurance.Total,
-		"report":          report.Lines,
-	})
-}
-
-func extractID(path, suffix string) string {
-	id := strings.TrimPrefix(path, "/api/v1/deliveries/")
-	return strings.TrimSuffix(id, suffix)
+	writeJSON(w, 200, map[string]any{"total_insurance": ins.Total, "report": rep.Lines})
 }
 
 func (s *Server) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/deliveries", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			s.List(w, r)
-		case http.MethodPost:
-			s.Create(w, r)
-		default:
-			writeError(w, 405, "method not allowed")
-		}
+		if r.Method == http.MethodGet { s.List(w, r) }
 	})
 	mux.HandleFunc("/api/v1/deliveries/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/start") && r.Method == http.MethodPost:
-			s.Start(w, r)
-		case strings.HasSuffix(r.URL.Path, "/complete") && r.Method == http.MethodPost:
-			s.Complete(w, r)
-		case strings.HasSuffix(r.URL.Path, "/undo") && r.Method == http.MethodPost:
-			s.Undo(w, r)
-		case r.Method == http.MethodGet:
-			s.Get(w, r)
-		default:
-			writeError(w, 405, "method not allowed")
+		case strings.HasSuffix(r.URL.Path, "/start"): s.Start(w, r)
+		case strings.HasSuffix(r.URL.Path, "/complete"): s.Complete(w, r)
+		case r.Method == http.MethodGet: s.Get(w, r)
 		}
 	})
 	mux.HandleFunc("/api/v1/reports", s.Reports)

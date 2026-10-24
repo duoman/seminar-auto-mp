@@ -1,8 +1,9 @@
 FROM golang:1.22-alpine AS builder
 WORKDIR /src
-COPY . .
+COPY go.mod ./
 RUN go mod tidy
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/api ./cmd/api
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/api ./cmd/api
 
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates

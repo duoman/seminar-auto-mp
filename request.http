@@ -1,20 +1,26 @@
 # ============================================================
-# Marketplace + Delivery — REST Client
+# Marketplace + Delivery — REST Client (Kafka, DDD, Choreography)
 #
 # Требуется расширение VS Code: humao.rest-client
 #
-# Открой этот файл в VS Code → над каждым запросом появится
-# ссылка "Send Request". Клик — запрос выполняется, ответ
-# показывается в отдельной панели.
+# Архитектура: marketplace и delivery общаются через Kafka.
+# Создание доставки — НЕ HTTP-вызов, а реакция на событие
+# ListingSold из топика "listing-events".
 #
-# Переменные ниже можно менять. {{marketplace}} и {{delivery}} —
-# это адреса сервисов.
+# Сценарий продажи:
+#   1. POST /sell → marketplace сохраняет Listing(sold) + outbox
+#   2. relay публикует ListingSold в Kafka
+#   3. delivery consumer создаёт Delivery + outbox
+#   4. relay публикует DeliveryScheduled в Kafka
+#   5. marketplace consumer обновляет delivery_id в Listing
+#
+# Между шагом 1 и получением delivery_id — пауза 1-3 секунды.
 # ============================================================
 
 @marketplace = http://127.0.0.1:8080
 @delivery = http://127.0.0.1:8081
 
-@listingId = L-D-1-CAR-1
+@listingId  = L-D-1-CAR-1
 @deliveryId = DEL-L-D-1-CAR-1
 
 
@@ -27,6 +33,8 @@ GET {{marketplace}}/healthz
 
 
 ### Создать объявление от дилера (Factory Method)
+# Автоматически: title «от дилера», гарантия, тест-драйв, комиссия 3%
+# Статус после создания: pending (draft → pending в Submit)
 POST {{marketplace}}/api/v1/listings
 Content-Type: application/json
 
@@ -42,8 +50,7 @@ Content-Type: application/json
   "seller_type": "dealer"
 }
 
-
-### Создать объявление от частника (Factory Method)
+### Создать объявление от частника
 POST {{marketplace}}/api/v1/listings
 Content-Type: application/json
 
@@ -59,8 +66,7 @@ Content-Type: application/json
   "seller_type": "private"
 }
 
-
-### Создать объявление от аукциона (Factory Method)
+### Создать объявление от аукциона
 POST {{marketplace}}/api/v1/listings
 Content-Type: application/json
 
@@ -77,73 +83,24 @@ Content-Type: application/json
 }
 
 
-### Кастомное объявление (Builder)
-POST {{marketplace}}/api/v1/listings/custom
-Content-Type: application/json
-
-{
-  "car_id": "CAR-41",
-  "brand": "BMW",
-  "model": "X5",
-  "year": 2022,
-  "mileage": 30000,
-  "price": 7000000,
-  "seller_id": "D-1",
-  "seller_name": "AutoDealer",
-  "seller_type": "dealer",
-  "title": "BMW X5, идеальное состояние",
-  "description": "Один владелец, полный пакет",
-  "region": "СПб",
-  "photos": [
-    "https://example.com/1.jpg",
-    "https://example.com/2.jpg"
-  ],
-  "has_warranty": true,
-  "has_test_drive": true,
-  "commission": 4
-}
-
-
-### Builder: ошибка — нет заголовка
-# Ожидается 400 и {"error": "listing: title is required"}
-POST {{marketplace}}/api/v1/listings/custom
-Content-Type: application/json
-
-{
-  "car_id": "CAR-5",
-  "brand": "Audi",
-  "model": "Q7",
-  "year": 2023,
-  "mileage": 5000,
-  "price": 8000000,
-  "seller_id": "D-1",
-  "seller_name": "AutoDealer",
-  "seller_type": "dealer"
-}
-
-
-### Клонировать объявление (Prototype)
-POST {{marketplace}}/api/v1/listings/{{listingId}}/clone
-
-
 ### Опубликовать объявление
+# pending → active. Требует title и хотя бы одно фото.
 POST {{marketplace}}/api/v1/listings/{{listingId}}/publish
 
 
-### Продать объявление (DIP + DI → вызов delivery)
+### Продать объявление (публикует ListingSold в outbox)
+# Ожидается: status=sold, delivery_id="" (пока пусто)
+# Через 1-3 секунды delivery создаст доставку и пришлёт событие обратно.
 POST {{marketplace}}/api/v1/listings/{{listingId}}/sell
+
+
+### Подожди 3 секунды и проверь снова
+# Ожидается: status=sold, delivery_id="DEL-L-D-1-CAR-1"
+GET {{marketplace}}/api/v1/listings/{{listingId}}
 
 
 ### Список объявлений
 GET {{marketplace}}/api/v1/listings
-
-
-### Одно объявление
-GET {{marketplace}}/api/v1/listings/{{listingId}}
-
-
-### Тарифы маркетплейсов (Abstract Factory)
-GET {{marketplace}}/api/v1/marketplaces
 
 
 # ============================================================
@@ -154,59 +111,9 @@ GET {{marketplace}}/api/v1/marketplaces
 GET {{delivery}}/healthz
 
 
-### Создать доставку — economy (Facade + Strategy + Flyweight + Proxy + Adapter + State + Observer)
-POST {{delivery}}/api/v1/deliveries
-Content-Type: application/json
-
-{
-  "listing_id": "L-D-2-CAR-10",
-  "customer_id": "C-2",
-  "type": "economy",
-  "from_city": "Moscow",
-  "to_city": "Kazan"
-}
-
-
-### Создать доставку — express (другая цена через Strategy)
-POST {{delivery}}/api/v1/deliveries
-Content-Type: application/json
-
-{
-  "listing_id": "L-D-2-CAR-11",
-  "customer_id": "C-3",
-  "type": "express",
-  "from_city": "Moscow",
-  "to_city": "Kazan"
-}
-
-
-### Создать доставку — eco
-POST {{delivery}}/api/v1/deliveries
-Content-Type: application/json
-
-{
-  "listing_id": "L-D-2-CAR-12",
-  "customer_id": "C-4",
-  "type": "eco",
-  "from_city": "Moscow",
-  "to_city": "SPb"
-}
-
-
-### Создать доставку — international (Template Method → InternationalPipeline)
-POST {{delivery}}/api/v1/deliveries
-Content-Type: application/json
-
-{
-  "listing_id": "L-D-2-CAR-13",
-  "customer_id": "C-5",
-  "type": "international",
-  "from_city": "Moscow",
-  "to_city": "Berlin"
-}
-
-
 ### Список доставок
+# Здесь появятся доставки, созданные асинхронно
+# после вызова POST /listings/{id}/sell
 GET {{delivery}}/api/v1/deliveries
 
 
@@ -214,40 +121,43 @@ GET {{delivery}}/api/v1/deliveries
 GET {{delivery}}/api/v1/deliveries/{{deliveryId}}
 
 
-### Запустить доставку (State + Template Method + Observer)
+### Запустить доставку (State: scheduled → in_transit)
+# Внутри: State + Template Method (pickup → transport → dropoff → notify)
+# В логах delivery видно: [City] pickup ..., [City] transport ...
 POST {{delivery}}/api/v1/deliveries/{{deliveryId}}/start
 
 
-### Завершить доставку (State)
+### Завершить доставку (State: in_transit → delivered)
 POST {{delivery}}/api/v1/deliveries/{{deliveryId}}/complete
 
 
-### Невозможный переход (State — уже доставлено)
-# Ожидается 400 и {"error": "уже доставлено (delivered)"}
-POST {{delivery}}/api/v1/deliveries/{{deliveryId}}/start
+### Невозможный переход — уже delivered
+# Ожидается 400: "complete only from in_transit, now: delivered"
+POST {{delivery}}/api/v1/deliveries/{{deliveryId}}/complete
 
 
-### Откатить последнюю смену статуса (Command)
-POST {{delivery}}/api/v1/deliveries/{{deliveryId}}/undo
-
-
-### Отчёты (Visitor)
+### Отчёты (Visitor: страховка + report)
 GET {{delivery}}/api/v1/reports
 
 
 # ============================================================
 # СЦЕНАРИЙ ЦЕЛИКОМ
 #
-# 1. Marketplace → health
-# 2. Marketplace → создать объявление от дилера
-# 3. Marketplace → опубликовать
-# 4. Marketplace → продать (вызовет delivery)
-# 5. Delivery → health
-# 6. Delivery → список доставок
-# 7. Delivery → start доставки
-# 8. Delivery → complete доставки
-# 9. Delivery → reports
+# 1. Создать объявление (POST /listings)
+# 2. Опубликовать (POST /listings/{id}/publish)
+# 3. Продать (POST /listings/{id}/sell)  ← публикует ListingSold
+# 4. Подождать 1-3 сек
+# 5. GET /listings/{id}                  ← delivery_id появился
+# 6. GET /deliveries                     ← доставка создана
+# 7. POST /deliveries/{id}/start         ← in_transit
+# 8. POST /deliveries/{id}/complete      ← delivered
+# 9. GET /reports                        ← Visitor
 #
-# Между запросами меняй {{listingId}} и {{deliveryId}} в
-# переменных сверху, если ID отличаются.
+# Если {{deliveryId}} отличается — возьми из GET /deliveries.
+# Формат: DEL-{listingId}, например DEL-L-D-1-CAR-1.
+#
+# Что смотреть в Kafka UI (http://localhost:8090):
+#   Topics → listing-events    ← сообщение ListingSold
+#   Topics → delivery-events   ← сообщение DeliveryScheduled
+#   Consumer groups            ← delivery-service, marketplace-service
 # ============================================================

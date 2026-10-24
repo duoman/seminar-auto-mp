@@ -1,56 +1,70 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
+	"marketplace/domain/sales"
 	"marketplace/httpapi"
 	"marketplace/infra"
-	"marketplace/ports"
+	kafkainfra "marketplace/infra/kafka"
 
 	_ "github.com/lib/pq"
 )
 
 func main() {
-	repo := pickRepository()
-	delivery := pickDeliveryClient()
-
-	server := httpapi.NewServer(repo, delivery)
-	addr := ":" + envOr("PORT", "8080")
-	log.Printf("marketplace on %s (storage=%s, delivery=%s)",
-		addr, envOr("STORAGE", "memory"), envOr("DELIVERY_URL", "http://localhost:8081"))
-
-	if err := http.ListenAndServe(addr, server.Routes()); err != nil {
+	db, err := sql.Open("postgres", envOr("DATABASE_URL", ""))
+	if err != nil {
 		log.Fatal(err)
 	}
-}
-
-func pickRepository() ports.ListingRepository {
-	switch envOr("STORAGE", "memory") {
-	case "postgres":
-		db, err := sql.Open("postgres", envOr("DATABASE_URL", ""))
-		if err != nil {
-			log.Fatalf("open db: %v", err)
-		}
-		if err := db.Ping(); err != nil {
-			log.Fatalf("ping db: %v", err)
-		}
-		return infra.NewPostgresListingRepository(db)
-	default:
-		return infra.NewInMemoryListingRepository()
+	if err := db.Ping(); err != nil {
+		log.Fatal(err)
 	}
+	defer db.Close()
+
+	repo := infra.NewPostgresRepo(db)
+	outbox := infra.NewOutboxRepo(db)
+
+	brokers := strings.Split(envOr("KAFKA_BROKERS", "kafka:9092"), ",")
+	ctx := context.Background()
+
+	// Relay: публикует события из outbox в Kafka
+	relay := kafkainfra.NewRelay(outbox, brokers, "listing-events")
+	go relay.Run(ctx)
+
+	// Consumer: слушает delivery-events, обновляет listings.delivery_id
+	consumer := kafkainfra.NewConsumer(brokers, "delivery-events", "marketplace-service")
+	go consumer.Run(ctx, func(e kafkainfra.DeliveryScheduledEvent) error {
+		id, _ := sales.NewListingID(e.ListingID)
+		l, err := repo.FindByID(id)
+		if err != nil {
+			log.Printf("[consumer] listing %s not found: %v", e.ListingID, err)
+			return nil
+		}
+		if err := l.AttachDelivery(e.DeliveryID); err != nil {
+			log.Printf("[consumer] attach: %v", err)
+			return nil
+		}
+		if err := repo.Save(l); err != nil {
+			return err
+		}
+		log.Printf("[consumer] attached delivery %s to listing %s", e.DeliveryID, e.ListingID)
+		return nil
+	})
+
+	server := httpapi.NewServer(repo)
+	addr := ":" + envOr("PORT", "8080")
+	log.Printf("marketplace on %s", addr)
+	log.Fatal(http.ListenAndServe(addr, server.Routes()))
 }
 
-func pickDeliveryClient() ports.DeliveryClient {
-	url := envOr("DELIVERY_URL", "http://localhost:8081")
-	return infra.NewHTTPDeliveryClient(url)
-}
-
-func envOr(k, def string) string {
+func envOr(k, d string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
 	}
-	return def
+	return d
 }

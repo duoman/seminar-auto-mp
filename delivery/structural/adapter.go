@@ -1,24 +1,14 @@
 package structural
 
-import "fmt"
-
 type MapsSDK struct{}
+func (MapsSDK) CalcRoute(_, _, _, _ float64) map[string]any { return map[string]any{"distance_m": 700000} }
 
-func (MapsSDK) CalcRoute(fromLat, fromLng, toLat, toLng float64) map[string]any {
-	return map[string]any{"distance_m": 700000, "duration_s": 21600}
-}
-
-type GeoProvider interface {
-	DistanceKM(from, to string) int
-}
+type GeoProvider interface{ DistanceKM(from, to string) int }
 
 type MapsAdapter struct{ sdk MapsSDK }
-
-func NewMapsAdapter(sdk MapsSDK) MapsAdapter { return MapsAdapter{sdk: sdk} }
-
+func NewMapsAdapter(s MapsSDK) MapsAdapter { return MapsAdapter{sdk: s} }
 func (a MapsAdapter) DistanceKM(from, to string) int {
-	raw := a.sdk.CalcRoute(0, 0, 0, 0)
-	meters, _ := raw["distance_m"].(int)
-	fmt.Printf("  [MapsAdapter] %s→%s = %d km\n", from, to, meters/1000)
-	return meters / 1000
+	r := a.sdk.CalcRoute(0, 0, 0, 0)
+	m, _ := r["distance_m"].(int)
+	return m / 1000
 }

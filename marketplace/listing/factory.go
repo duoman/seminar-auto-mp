@@ -3,61 +3,62 @@ package listing
 import (
 	"fmt"
 
-	"marketplace/domain"
+	"marketplace/domain/catalog"
+	"marketplace/domain/sales"
 )
 
 type ListingFactory interface {
-	Create(car *domain.Car, seller *domain.Seller) *domain.Listing
+	Create(id sales.ListingID, car *catalog.Car, seller *sales.Seller) (*sales.Listing, error)
 }
 
 type DealerListingFactory struct{}
 
-func (DealerListingFactory) Create(car *domain.Car, seller *domain.Seller) *domain.Listing {
-	return &domain.Listing{
-		ID:  fmt.Sprintf("L-%s-%s", seller.ID, car.ID),
-		Car: car, Seller: seller,
-		Title:       fmt.Sprintf("%s %s %d, от официального дилера", car.Brand, car.Model, car.Year),
-		Description: "Гарантия, сервисная история, проверка по 120 пунктам.",
-		Price:       car.Price, Status: domain.StatusPending,
-		HasWarranty: true, HasTestDrive: true, Region: "Moscow", Commission: 3,
-	}
+func (DealerListingFactory) Create(id sales.ListingID, car *catalog.Car, seller *sales.Seller) (*sales.Listing, error) {
+	l, err := sales.NewListing(id, car, seller, car.Price())
+	if err != nil { return nil, err }
+	_ = l.SetTitle(fmt.Sprintf("%s %s %d, от дилера", car.Brand(), car.Model(), car.Year().Value()))
+	_ = l.SetRegion("Moscow")
+	c, _ := sales.NewDiscountPercent(3)
+	_ = l.SetCommission(c)
+	l.WithWarranty()
+	l.WithTestDrive()
+	_ = l.AddPhoto("https://example.com/placeholder.jpg")
+	return l, nil
 }
 
 type PrivateListingFactory struct{}
 
-func (PrivateListingFactory) Create(car *domain.Car, seller *domain.Seller) *domain.Listing {
-	return &domain.Listing{
-		ID:  fmt.Sprintf("L-%s-%s", seller.ID, car.ID),
-		Car: car, Seller: seller,
-		Title:       fmt.Sprintf("%s %s %d, пробег %d км", car.Brand, car.Model, car.Year, car.Mileage),
-		Description: "Продаю личную машину.",
-		Price:       car.Price, Status: domain.StatusPending,
-		HasWarranty: false, HasTestDrive: true, Region: "Moscow", Commission: 1,
-	}
+func (PrivateListingFactory) Create(id sales.ListingID, car *catalog.Car, seller *sales.Seller) (*sales.Listing, error) {
+	l, err := sales.NewListing(id, car, seller, car.Price())
+	if err != nil { return nil, err }
+	_ = l.SetTitle(fmt.Sprintf("%s %s %d, пробег %d", car.Brand(), car.Model(), car.Year().Value(), car.Mileage().Value()))
+	_ = l.SetRegion("Moscow")
+	c, _ := sales.NewDiscountPercent(1)
+	_ = l.SetCommission(c)
+	l.WithTestDrive()
+	_ = l.AddPhoto("https://example.com/placeholder.jpg")
+	return l, nil
 }
 
 type AuctionListingFactory struct{}
 
-func (AuctionListingFactory) Create(car *domain.Car, seller *domain.Seller) *domain.Listing {
-	return &domain.Listing{
-		ID:  fmt.Sprintf("L-%s-%s", seller.ID, car.ID),
-		Car: car, Seller: seller,
-		Title:       fmt.Sprintf("Аукцион: %s %s %d", car.Brand, car.Model, car.Year),
-		Description: "Стартовая цена ниже рыночной.",
-		Price:       car.Price, Status: domain.StatusDraft,
-		HasWarranty: false, HasTestDrive: false, Region: "Moscow", Commission: 5,
-	}
+func (AuctionListingFactory) Create(id sales.ListingID, car *catalog.Car, seller *sales.Seller) (*sales.Listing, error) {
+	l, err := sales.NewListing(id, car, seller, car.Price())
+	if err != nil { return nil, err }
+	_ = l.SetTitle(fmt.Sprintf("Аукцион: %s %s %d", car.Brand(), car.Model(), car.Year().Value()))
+	_ = l.SetRegion("Moscow")
+	c, _ := sales.NewDiscountPercent(5)
+	_ = l.SetCommission(c)
+	_ = l.AddPhoto("https://example.com/placeholder.jpg")
+	return l, nil
 }
 
-func FactoryFor(t domain.SellerType) (ListingFactory, error) {
+func FactoryFor(t sales.SellerType) ListingFactory {
 	switch t {
-	case domain.SellerDealer:
-		return DealerListingFactory{}, nil
-	case domain.SellerPrivate:
-		return PrivateListingFactory{}, nil
-	case domain.SellerAuction:
-		return AuctionListingFactory{}, nil
+	case sales.SellerDealer:  return DealerListingFactory{}
+	case sales.SellerPrivate: return PrivateListingFactory{}
+	case sales.SellerAuction: return AuctionListingFactory{}
 	default:
-		return nil, fmt.Errorf("unknown seller type: %q", t)
+		panic("unknown seller: " + string(t))
 	}
 }

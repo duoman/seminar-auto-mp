@@ -1,63 +1,24 @@
 package behavior
 
-import (
-	"fmt"
+import "fmt"
 
-	"delivery/domain"
-)
-
-type RouteStrategy interface {
-	Name() string
-	BuildRoute(from, to domain.Point) domain.Route
-}
+type RouteStrategy interface{ BuildRoute(from, to string) (string, int, int) }
 
 type FastestRoute struct{}
-func (FastestRoute) Name() string { return "fastest" }
-func (FastestRoute) BuildRoute(from, to domain.Point) domain.Route {
-	return domain.Route{
-		Description: fmt.Sprintf("Быстрый %s→%s", from.City, to.City),
-		DistanceKM:  700, PriceRUB: 15000,
-	}
-}
-
+func (FastestRoute) BuildRoute(f, t string) (string, int, int) { return fmt.Sprintf("Fast %s→%s", f, t), 15000, 700 }
 type CheapestRoute struct{}
-func (CheapestRoute) Name() string { return "cheapest" }
-func (CheapestRoute) BuildRoute(from, to domain.Point) domain.Route {
-	return domain.Route{
-		Description: fmt.Sprintf("Дешёвый %s→%s", from.City, to.City),
-		DistanceKM:  800, PriceRUB: 8000,
-	}
-}
-
+func (CheapestRoute) BuildRoute(f, t string) (string, int, int) { return fmt.Sprintf("Cheap %s→%s", f, t), 8000, 800 }
 type EcoRoute struct{}
-func (EcoRoute) Name() string { return "eco" }
-func (EcoRoute) BuildRoute(from, to domain.Point) domain.Route {
-	return domain.Route{
-		Description: fmt.Sprintf("Эко %s→%s", from.City, to.City),
-		DistanceKM:  750, PriceRUB: 12000,
-	}
-}
+func (EcoRoute) BuildRoute(f, t string) (string, int, int) { return fmt.Sprintf("Eco %s→%s", f, t), 12000, 750 }
+type IntlRoute struct{}
+func (IntlRoute) BuildRoute(f, t string) (string, int, int) { return fmt.Sprintf("Intl %s→%s", f, t), 60000, 2500 }
 
-type InternationalRoute struct{}
-func (InternationalRoute) Name() string { return "international" }
-func (InternationalRoute) BuildRoute(from, to domain.Point) domain.Route {
-	return domain.Route{
-		Description: fmt.Sprintf("Международный %s→%s", from.City, to.City),
-		DistanceKM:  2500, PriceRUB: 60000,
-	}
-}
-
-func StrategyFor(t domain.DeliveryType) RouteStrategy {
+func StrategyFor(t string) RouteStrategy {
 	switch t {
-	case domain.TypeExpress:
-		return FastestRoute{}
-	case domain.TypeEconomy:
-		return CheapestRoute{}
-	case domain.TypeEco:
-		return EcoRoute{}
-	case domain.TypeInternational:
-		return InternationalRoute{}
-	default:
-		return FastestRoute{}
+	case "express": return FastestRoute{}
+	case "economy": return CheapestRoute{}
+	case "eco": return EcoRoute{}
+	case "international": return IntlRoute{}
 	}
+	return FastestRoute{}
 }

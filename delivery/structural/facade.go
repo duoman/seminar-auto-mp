@@ -1,56 +1,32 @@
 package structural
 
 import (
-	"time"
-
 	"delivery/behavior"
 	"delivery/domain"
 	"delivery/ports"
 )
 
 type ScheduleFacade struct {
-	repo      ports.DeliveryRepository
-	geo       GeoProvider
-	templates *RouteTemplateFactory
-	pub       *behavior.Publisher
-	history   *behavior.History
+	repo ports.Repository
+	tpl  *Templates
+	pub  *behavior.Publisher
 }
 
-func NewScheduleFacade(
-	repo ports.DeliveryRepository,
-	geo GeoProvider,
-	templates *RouteTemplateFactory,
-	pub *behavior.Publisher,
-	history *behavior.History,
-) *ScheduleFacade {
-	return &ScheduleFacade{repo: repo, geo: geo, templates: templates, pub: pub, history: history}
+func NewScheduleFacade(repo ports.Repository, tpl *Templates, pub *behavior.Publisher) *ScheduleFacade {
+	return &ScheduleFacade{repo: repo, tpl: tpl, pub: pub}
 }
 
-func (f *ScheduleFacade) Schedule(
-	id, listingID, customerID string,
-	deliveryType domain.DeliveryType,
-	from, to domain.Point,
-) (*domain.Delivery, error) {
+func (f *ScheduleFacade) Schedule(id, listingID, customerID, typ, from, to string) (*domain.Delivery, error) {
+	strategy := behavior.StrategyFor(typ)
+	_, price, distance := strategy.BuildRoute(from, to)
+	t := f.tpl.Get(from, to)
+	if t.DistanceKM > 0 { distance = t.DistanceKM }
 
-	strategy := behavior.StrategyFor(deliveryType)
-	route := strategy.BuildRoute(from, to)
-	template := f.templates.Get(from.City, to.City)
-
-	d := &domain.Delivery{
-		ID: id, ListingID: listingID, CustomerID: customerID,
-		Type: deliveryType, From: from, To: to,
-		Status: domain.StatusCreated,
-		Price: route.PriceRUB, DistanceKM: template.DistanceKM,
-		CreatedAt: time.Now(),
-	}
-
-	state := behavior.StateFor(d.Status)
-	if err := state.Schedule(d); err != nil {
-		return nil, err
-	}
-	if err := f.repo.Save(d); err != nil {
-		return nil, err
-	}
-	f.pub.Publish(behavior.DeliveryEvent{DeliveryID: d.ID, Status: string(d.Status)})
+	d, err := domain.NewDelivery(id, listingID, customerID, domain.DeliveryType(typ),
+		domain.Point{City: from}, domain.Point{City: to}, price, distance)
+	if err != nil { return nil, err }
+	if err := d.Schedule(); err != nil { return nil, err }
+	if err := f.repo.Save(d); err != nil { return nil, err }
+	f.pub.Publish(behavior.Event{DeliveryID: d.ID(), Status: string(d.Status())})
 	return d, nil
 }
